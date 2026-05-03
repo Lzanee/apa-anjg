@@ -1,1 +1,128 @@
-name
+name: RDP Runner - Roblox with Tailscale
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Session duration in minutes'
+        required: false
+        default: '360'
+
+jobs:
+  rdp-session:
+    runs-on: windows-latest
+    timeout-minutes: 420
+    
+    steps:
+      - name: Generate Random Password
+        id: pwd
+        shell: powershell
+        run: |
+          $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%'
+          $password = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
+          echo "RDP_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "::add-mask::$password"
+          Write-Host "✓ Password generated"
+      
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          Write-Host "Installing Tailscale..."
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/windows/tailscale-setup-latest.exe' -OutFile "$env:TEMP\ts-setup.exe"
+          & "$env:TEMP\ts-setup.exe" /S
+          Start-Sleep -Seconds 15
+          Write-Host "✓ Tailscale installed"
+      
+      - name: Connect Tailscale
+        shell: powershell
+        run: |
+          Write-Host "Connecting to Tailscale..."
+          $authKey = "${{ secrets.TAILSCALE_AUTH_KEY }}"
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$authKey" --hostname="roblox-runner"
+          Start-Sleep -Seconds 10
+          Write-Host "✓ Connected to Tailscale"
+      
+      - name: Get Tailscale IP
+        id: ts-ip
+        shell: powershell
+        run: |
+          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          echo "IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Tailscale IP: $ip"
+      
+      - name: Enable RDP
+        shell: powershell
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          netsh advfirewall firewall add rule name="Allow RDP" dir=in action=allow protocol=tcp localport=3389 2>$null
+          Write-Host "✓ RDP enabled"
+      
+      - name: Create RDP User
+        shell: powershell
+        run: |
+          $user = "rdpuser"
+          $pass = $env:RDP_PASSWORD
+          
+          if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) {
+              $secpass = ConvertTo-SecureString -String $pass -AsPlainText -Force
+              New-LocalUser -Name $user -Password $secpass -Description "RDP User"
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user
+              Add-LocalGroupMember -Group "Administrators" -Member $user
+              Write-Host "✓ RDP user created"
+          }
+      
+      - name: Install Roblox
+        shell: powershell
+        run: |
+          Write-Host "Installing Roblox..."
+          $ProgressPreference = 'SilentlyContinue'
+          try {
+              Invoke-WebRequest -Uri 'https://www.roblox.com/download/client' -OutFile "$env:TEMP\Roblox.exe"
+              & "$env:TEMP\Roblox.exe" /S
+              Start-Sleep -Seconds 20
+              Write-Host "✓ Roblox installed"
+          } catch {
+              Write-Host "⚠ Roblox install skipped - RDP still available"
+          }
+      
+      - name: Display Info
+        shell: powershell
+        run: |
+          $duration = 360
+          $endTime = (Get-Date).AddMinutes($duration)
+          
+          Write-Host ""
+          Write-Host "════════════════════════════════════════"
+          Write-Host "RDP WITH TAILSCALE - READY TO CONNECT"
+          Write-Host "════════════════════════════════════════"
+          Write-Host "IP Address:    $env:IP"
+          Write-Host "Port:          3389"
+          Write-Host "Username:      rdpuser"
+          Write-Host "Password:      [See masked output]"
+          Write-Host "Duration:      $duration minutes"
+          Write-Host "Ends at:       $endTime"
+          Write-Host ""
+          Write-Host "STEPS TO CONNECT:"
+          Write-Host "1. Install Tailscale: https://tailscale.com/download"
+          Write-Host "2. Authenticate and join network"
+          Write-Host "3. Open RDP to: $env:IP:3389"
+          Write-Host "4. Use rdpuser + generated password"
+          Write-Host "════════════════════════════════════════"
+      
+      - name: Keep Session Active
+        shell: powershell
+        run: |
+          $duration = 360
+          $endTime = (Get-Date).AddMinutes($duration)
+          
+          while ((Get-Date) -lt $endTime) {
+              $remaining = [math]::Max(0, ($endTime - (Get-Date)).TotalMinutes)
+              Write-Host "Active - $([math]::Round($remaining)) min remaining"
+              
+              [void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
+              [System.Windows.Forms.SendKeys]::SendWait('+')
+              
+              Start-Sleep -Seconds 60
+          }

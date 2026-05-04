@@ -1,65 +1,149 @@
-name: RDP Skyro Runner
+name: Windows RDP Gaming Environment with Tailscale
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
-  secure-rdp:
+  setup-rdp-runner:
     runs-on: windows-latest
-    timeout-minutes: 3600 # Maksimal 6 jam (360 menit sebenarnya, tapi 3600 biar aman)
-
+    timeout-minutes: 360
+    
     steps:
-      - name: Configure Core RDP Settings
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
-          Restart-Service -Name TermService -Force
-
-      - name: Create RDP User with Secure Password
-        run: |
-          $charSet = @{ Upper = [char[]](65..90); Lower = [char[]](97..122); Number = [char[]](48..57); Special = [char[]](33..47) }
-          $password = -join (($charSet.Upper | Get-Random -Count 4) + ($charSet.Lower | Get-Random -Count 4) + ($charSet.Number | Get-Random -Count 4) + ($charSet.Special | Get-Random -Count 4) | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "Skyro" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "Skyro"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Skyro"
-          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
-
-      - name: Install Tailscale
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-
-      - name: Establish Tailscale Connection
-        run: |
-          $authKey = "${{ secrets.TAILSCALE_AUTH_KEY }}"
-          if ($authKey) {
-              Write-Host "Key ditemukan, login otomatis..."
-              & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$authKey --hostname=skyro-rdp-${{ github.run_id }}
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Install Chocolatey packages
+      shell: powershell
+      run: |
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+        iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+        choco install googlechrome -y
+        choco install 7zip -y
+        choco install vlc -y
+    
+    - name: Enable RDP Access
+      shell: powershell
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
+    
+    - name: Create RDP User
+      shell: powershell
+      run: |
+        $Password = ConvertTo-SecureString "GameRunner2024!Secure" -AsPlainText -Force
+        New-LocalUser "rdpgamer" -Password $Password -FullName "RDP Gamer" -Description "Remote gaming account"
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpgamer"
+        Add-LocalGroupMember -Group "Administrators" -Member "rdpgamer"
+    
+    - name: Install Tailscale
+      shell: powershell
+      run: |
+        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "tailscale-setup.msi"
+        Start-Process msiexec.exe -Wait -ArgumentList '/i tailscale-setup.msi /quiet /qn /norestart'
+        Start-Sleep -Seconds 10
+    
+    - name: Start Tailscale and Get Login Link
+      shell: powershell
+      run: |
+        & "C:\Program Files\Tailscale\tailscale.exe" up --hostname=github-runner-rdp --accept-routes --shields-up=false
+        Start-Sleep -Seconds 5
+        
+        Write-Host "============================================"
+        Write-Host "TAILSCALE AUTHENTICATION REQUIRED"
+        Write-Host "============================================"
+        Write-Host ""
+        Write-Host "Please authenticate Tailscale by visiting the login link above"
+        Write-Host "The workflow will wait for 5 minutes for authentication"
+        Write-Host ""
+        Write-Host "============================================"
+        
+        $timeout = 300
+        $elapsed = 0
+        $authenticated = $false
+        
+        while ($elapsed -lt $timeout -and -not $authenticated) {
+          Start-Sleep -Seconds 10
+          $elapsed += 10
+          
+          $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
+          if ($status.BackendState -eq "Running") {
+            $authenticated = $true
+            Write-Host "Authentication successful!"
           } else {
-              Write-Host "Key tidak ada, silakan klik link login di bawah ini:"
-              & "$env:ProgramFiles\Tailscale\tailscale.exe" up --hostname=skyro-rdp-${{ github.run_id }}
+            Write-Host "Waiting for authentication... ($elapsed/$timeout seconds)"
           }
+        }
+        
+        if (-not $authenticated) {
+          Write-Host "Authentication timeout. Please restart the workflow."
+          exit 1
+        }
+    
+    - name: Get Tailscale Connection Info
+      shell: powershell
+      run: |
+        $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
+        $tailscaleIP = $status.Self.TailscaleIPs[0]
+        
+        Write-Host "============================================"
+        Write-Host "RDP CONNECTION DETAILS"
+        Write-Host "============================================"
+        Write-Host "Tailscale IP: $tailscaleIP"
+        Write-Host "RDP Port: 3389"
+        Write-Host "Username: rdpgamer"
+        Write-Host "Password: GameRunner2024!Secure"
+        Write-Host "============================================"
+        Write-Host "Connect using: $tailscaleIP in Remote Desktop"
+        Write-Host "Make sure Tailscale is running on your local machine"
+        Write-Host "Connection will remain active for 6 hours"
+        Write-Host "============================================"
+    
+    - name: Install Gaming Requirements
+      shell: powershell
+      run: |
+        choco install directx -y
+        choco install vcredist-all -y
+        choco install dotnet-runtime -y
+        choco install dotnet-sdk -y
+    
+    - name: Setup Virtual Display Driver
+      shell: powershell
+      run: |
+        Invoke-WebRequest "https://www.amyuni.com/downloads/usbmmidd_v2.zip" -OutFile "usbmmidd.zip"
+        Expand-Archive "usbmmidd.zip" -DestinationPath "usbmmidd"
+        cd usbmmidd/usbmmidd_v2
+        ./deviceinstaller64.exe install usbmmidd.inf usbmmidd
+    
+    - name: Install Additional Tools
+      shell: powershell
+      run: |
+        choco install steam -y
+        choco install discord -y
+        choco install obs-studio -y
+    
+    - name: Keep Runner Alive
+      shell: powershell
+      run: |
+        Write-Host "Runner is active. Connect via RDP to run games and applications."
+        Write-Host "This session will remain active for the next 6 hours."
+        
+        $endTime = (Get-Date).AddHours(6)
+        while ((Get-Date) -lt $endTime) {
+          $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
+          $tailscaleIP = $status.Self.TailscaleIPs[0]
+          $remaining = ($endTime - (Get-Date)).ToString('hh\:mm\:ss')
           
-          # Ambil IP Tailscale
-          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-
-      - name: Maintain Connection (6 Hours)
-        run: |
-          Write-Host "`n==============================="
-          Write-Host "IP ADDRESS : $env:TAILSCALE_IP"
-          Write-Host "USERNAME   : Skyro"
-          Write-Host "PASSWORD   : $env:RDP_PASS"
-          Write-Host "===============================`n"
-          Write-Host "Runner akan aktif selama 6 jam..."
-          
-          $endTime = (Get-Date).AddHours(6)
-          while ((Get-Date) -lt $endTime) {
-              Write-Host "[$(Get-Date)] Skyro RDP Masih Berjalan..."
-              Start-Sleep -Seconds 300
-          }
-          
+          Write-Host "Session active - Tailscale IP: $tailscaleIP - Time remaining: $remaining"
+          Start-Sleep -Seconds 300
+        }
+    
+    - name: Cleanup
+      if: always()
+      shell: powershell
+      run: |
+        & "C:\Program Files\Tailscale\tailscale.exe" down
+        Remove-LocalUser -Name "rdpgamer" -ErrorAction SilentlyContinue

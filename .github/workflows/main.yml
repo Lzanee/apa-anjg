@@ -1,128 +1,108 @@
-name: RDP Runner - Roblox with Tailscale
+name: RDP-Gaming-Roblox-Tailscale-RandomPass
 
-on:
-  workflow_dispatch:
-    inputs:
-      duration:
-        description: 'Session duration in minutes'
-        required: false
-        default: '360'
+on: workflow_dispatch
 
 jobs:
-  rdp-session:
+  build:
     runs-on: windows-latest
-    timeout-minutes: 420
-    
+    timeout-minutes: 360
+
     steps:
-      - name: Generate Random Password
-        id: pwd
-        shell: powershell
-        run: |
-          $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%'
-          $password = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
-          echo "RDP_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "::add-mask::$password"
-          Write-Host "✓ Password generated"
-      
-      - name: Install Tailscale
-        shell: powershell
-        run: |
-          Write-Host "Installing Tailscale..."
-          $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/windows/tailscale-setup-latest.exe' -OutFile "$env:TEMP\ts-setup.exe"
-          & "$env:TEMP\ts-setup.exe" /S
-          Start-Sleep -Seconds 15
-          Write-Host "✓ Tailscale installed"
-      
-      - name: Connect Tailscale
-        shell: powershell
-        run: |
-          Write-Host "Connecting to Tailscale..."
-          $authKey = "${{ secrets.TAILSCALE_AUTH_KEY }}"
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$authKey" --hostname="roblox-runner"
-          Start-Sleep -Seconds 10
-          Write-Host "✓ Connected to Tailscale"
-      
-      - name: Get Tailscale IP
-        id: ts-ip
-        shell: powershell
-        run: |
-          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-          echo "IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Tailscale IP: $ip"
-      
-      - name: Enable RDP
-        shell: powershell
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          netsh advfirewall firewall add rule name="Allow RDP" dir=in action=allow protocol=tcp localport=3389 2>$null
-          Write-Host "✓ RDP enabled"
-      
-      - name: Create RDP User
-        shell: powershell
-        run: |
-          $user = "rdpuser"
-          $pass = $env:RDP_PASSWORD
-          
-          if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) {
-              $secpass = ConvertTo-SecureString -String $pass -AsPlainText -Force
-              New-LocalUser -Name $user -Password $secpass -Description "RDP User"
-              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user
-              Add-LocalGroupMember -Group "Administrators" -Member $user
-              Write-Host "✓ RDP user created"
-          }
-      
-      - name: Install Roblox
-        shell: powershell
-        run: |
-          Write-Host "Installing Roblox..."
-          $ProgressPreference = 'SilentlyContinue'
-          try {
-              Invoke-WebRequest -Uri 'https://www.roblox.com/download/client' -OutFile "$env:TEMP\Roblox.exe"
-              & "$env:TEMP\Roblox.exe" /S
-              Start-Sleep -Seconds 20
-              Write-Host "✓ Roblox installed"
-          } catch {
-              Write-Host "⚠ Roblox install skipped - RDP still available"
-          }
-      
-      - name: Display Info
-        shell: powershell
-        run: |
-          $duration = 360
-          $endTime = (Get-Date).AddMinutes($duration)
-          
-          Write-Host ""
-          Write-Host "════════════════════════════════════════"
-          Write-Host "RDP WITH TAILSCALE - READY TO CONNECT"
-          Write-Host "════════════════════════════════════════"
-          Write-Host "IP Address:    $env:IP"
-          Write-Host "Port:          3389"
-          Write-Host "Username:      rdpuser"
-          Write-Host "Password:      [See masked output]"
-          Write-Host "Duration:      $duration minutes"
-          Write-Host "Ends at:       $endTime"
-          Write-Host ""
-          Write-Host "STEPS TO CONNECT:"
-          Write-Host "1. Install Tailscale: https://tailscale.com/download"
-          Write-Host "2. Authenticate and join network"
-          Write-Host "3. Open RDP to: $env:IP:3389"
-          Write-Host "4. Use rdpuser + generated password"
-          Write-Host "════════════════════════════════════════"
-      
-      - name: Keep Session Active
-        shell: powershell
-        run: |
-          $duration = 360
-          $endTime = (Get-Date).AddMinutes($duration)
-          
-          while ((Get-Date) -lt $endTime) {
-              $remaining = [math]::Max(0, ($endTime - (Get-Date)).TotalMinutes)
-              Write-Host "Active - $([math]::Round($remaining)) min remaining"
-              
-              [void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
-              [System.Windows.Forms.SendKeys]::SendWait('+')
-              
-              Start-Sleep -Seconds 60
-          }
+    - name: Generate random password
+      id: genpass
+      run: |
+        Add-Type -AssemblyName System.Web
+        $randomPass = [System.Web.Security.Membership]::GeneratePassword(12, 2)
+        echo "RDP_PASSWORD=$randomPass" | Out-File -FilePath $env:GITHUB_ENV -Append
+        echo "Generated password: $randomPass"
+
+    - name: Download Tailscale
+      run: |
+        $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.78.3.exe"
+        Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\tailscale.exe"
+
+    - name: Install Tailscale silently
+      run: |
+        Start-Process -FilePath "$env:TEMP\tailscale.exe" -ArgumentList "/S /quiet" -Wait -NoNewWindow
+
+    - name: Start Tailscale with auth key
+      run: |
+        $ts = "C:\Program Files\Tailscale\tailscale.exe"
+        if (-not (Test-Path $ts)) { $ts = "C:\Program Files (x86)\Tailscale\tailscale.exe" }
+        & $ts up --auth-key "${{ secrets.TAILSCALE_AUTH_KEY }}" --accept-routes --accept-dns
+      env:
+        TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+
+    - name: Get Tailscale IP
+      run: |
+        $ts = "C:\Program Files\Tailscale\tailscale.exe"
+        if (-not (Test-Path $ts)) { $ts = "C:\Program Files (x86)\Tailscale\tailscale.exe" }
+        $ip = & $ts ip -4
+        echo "TAILSCALE_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+    - name: Enable RDP and create user with random password
+      run: |
+        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+        netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 0 /f
+        net user runneradmin "$env:RDP_PASSWORD" /add
+        net localgroup "Remote Desktop Users" runneradmin /add
+        net localgroup "Administrators" runneradmin /add
+
+    - name: Optimize Windows for gaming
+      run: |
+        powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" -Name "VisualFXSetting" -Value 2 -Force
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "EnableTransparency" -Value 0 -Force
+
+    - name: Install Chocolatey and dependencies
+      run: |
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+        iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+        choco install vcredist-all directx webview2 googlechrome -y
+
+    - name: Install Roblox
+      run: |
+        $launcher = "$env:TEMP\RobloxPlayerLauncher.exe"
+        Invoke-WebRequest -Uri "https://setup.rbxcdn.com/version-da39a3ee5e6b4b0d3255bfef95601890afd80709-RobloxPlayerLauncher.exe" -OutFile $launcher
+        Start-Process -FilePath $launcher -ArgumentList "/SILENT" -Wait
+        $robloxPath = Get-ChildItem "$env:LOCALAPPDATA\Roblox\Versions" -Filter "RobloxPlayerLauncher.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($robloxPath) {
+          $shortcut = "$env:USERPROFILE\Desktop\Roblox.lnk"
+          $WScriptShell = New-Object -ComObject WScript.Shell
+          $lnk = $WScriptShell.CreateShortcut($shortcut)
+          $lnk.TargetPath = $robloxPath.FullName
+          $lnk.Save()
+        }
+
+    - name: Chrome shortcut
+      run: |
+        $chrome = "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
+        if (Test-Path $chrome) {
+          $shortcut = "$env:USERPROFILE\Desktop\Chrome.lnk"
+          $WScriptShell = New-Object -ComObject WScript.Shell
+          $lnk = $WScriptShell.CreateShortcut($shortcut)
+          $lnk.TargetPath = $chrome
+          $lnk.Save()
+        }
+
+    - name: Enable audio over RDP
+      run: |
+        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v fDisableAudioCapture /t REG_DWORD /d 0 /f
+        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v fDisableAudioPlayback /t REG_DWORD /d 0 /f
+
+    - name: Show connection details
+      run: |
+        Write-Host "========================================="
+        Write-Host "RDP using Tailscale"
+        Write-Host "IP Address: $env:TAILSCALE_IP"
+        Write-Host "Username: runneradmin"
+        Write-Host "Password: $env:RDP_PASSWORD"
+        Write-Host "Port: 3389 (default)"
+        Write-Host ""
+        Write-Host "Roblox + Chrome installed"
+        Write-Host "========================================="
+
+    - name: Keep alive
+      run: while ($true) { Start-Sleep -Seconds 300 }
